@@ -545,13 +545,12 @@ def setup_driver(profile_path, proxy_config):
     # === HEADLESS MODE ===
     if IS_TERMUX or IS_LINUX or not os.environ.get('DISPLAY'):
         print(f"{Y}[DEVICE] Che do Headless (An trinh duyet){W}")
-        # Dùng --headless thay vì --headless=new (--headless=new cần Chrome 112+, Termux có thể cũ hơn)
         chrome_options.add_argument("--headless")
         chrome_options.add_argument("--disable-gpu")
-        chrome_options.add_argument("--disable-software-rasterizer")
 
-    # === TÌM CHROMIUM BINARY ===
+    # === TERMUX: Setup môi trường trước khi config Chrome ===
     if IS_TERMUX:
+        # Tìm Chromium binary
         chromium_paths = [
             "/data/data/com.termux/files/usr/bin/chromium-browser",
             "/data/data/com.termux/files/usr/bin/chromium",
@@ -568,17 +567,28 @@ def setup_driver(profile_path, proxy_config):
             chrome_options.binary_location = chromium_found
         else:
             print(f"{R}[!] Khong tim thay Chromium! Chay: pkg install chromium{W}")
-            raise FileNotFoundError("Chromium not found. Run: pkg install chromium")
+            raise FileNotFoundError("Chromium not found")
 
-        # === SET TMPDIR cho Termux (quan trọng - Chrome cần thư mục tmp) ===
-        termux_tmp = "/data/data/com.termux/files/usr/tmp"
-        if not os.path.exists(termux_tmp):
-            try:
-                os.makedirs(termux_tmp, exist_ok=True)
-            except Exception:
-                pass
+        # SET tất cả biến môi trường cần thiết cho Chrome trên Termux
+        termux_home = os.environ.get("HOME", "/data/data/com.termux/files/home")
+        termux_tmp = os.path.join(termux_home, "tmp")
+        termux_cache = os.path.join(termux_home, ".cache", "chromium")
+        
+        for d in [termux_tmp, termux_cache]:
+            os.makedirs(d, exist_ok=True)
+        
         os.environ["TMPDIR"] = termux_tmp
+        os.environ["HOME"] = termux_home
+        os.environ["XDG_CONFIG_HOME"] = os.path.join(termux_home, ".config")
+        os.environ["XDG_CACHE_HOME"] = os.path.join(termux_home, ".cache")
+        
+        # Đặt profile vào thư mục HOME của Termux thay vì cwd
+        profile_path = os.path.join(termux_home, "fb_profiles_hidden", os.path.basename(profile_path))
+        os.makedirs(profile_path, exist_ok=True)
+        
+        print(f"{G}[DEVICE] HOME: {termux_home}{W}")
         print(f"{G}[DEVICE] TMPDIR: {termux_tmp}{W}")
+        print(f"{G}[DEVICE] Profile: {profile_path}{W}")
 
     # === CHROME OPTIONS CHUNG ===
     chrome_options.add_argument("--no-sandbox")
@@ -586,36 +596,42 @@ def setup_driver(profile_path, proxy_config):
     chrome_options.add_argument(f"--user-data-dir={profile_path}")
     chrome_options.add_argument(f'--user-agent={win_ua}')
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-    chrome_options.add_argument("--disable-infobars")
     chrome_options.add_argument("--disable-extensions")
-    chrome_options.add_argument("--disable-popup-blocking")
-    chrome_options.add_argument("--disable-notifications")
     chrome_options.add_argument("--no-first-run")
     chrome_options.add_argument("--ignore-certificate-errors")
 
     # === OPTIONS RIÊNG CHO TERMUX ===
     if IS_TERMUX:
-        # Quan trọng cho Termux - fix SessionNotCreatedException
-        chrome_options.add_argument("--remote-debugging-port=0")
+        # BẮT BUỘC trên Termux - Chrome không thể fork process trên Android
+        chrome_options.add_argument("--single-process")
+        chrome_options.add_argument("--no-zygote")
+        
+        # Fix crash
+        chrome_options.add_argument("--disable-setuid-sandbox")
         chrome_options.add_argument("--disable-crash-reporter")
         chrome_options.add_argument("--disable-breakpad")
-        chrome_options.add_argument("--disable-setuid-sandbox")
-        chrome_options.add_argument("--no-zygote")
-
-        # Tiết kiệm RAM
+        chrome_options.add_argument("--remote-debugging-port=0")
+        
+        # Disable features gây lỗi trên Termux
+        chrome_options.add_argument("--disable-software-rasterizer")
         chrome_options.add_argument("--disable-background-networking")
         chrome_options.add_argument("--disable-default-apps")
         chrome_options.add_argument("--disable-sync")
         chrome_options.add_argument("--disable-translate")
-        chrome_options.add_argument("--disable-logging")
         chrome_options.add_argument("--disable-renderer-backgrounding")
-        chrome_options.add_argument("--disable-features=TranslateUI")
+        chrome_options.add_argument("--disable-logging")
+        chrome_options.add_argument("--disable-notifications")
+        chrome_options.add_argument("--disable-popup-blocking")
+        chrome_options.add_argument("--disable-infobars")
+        chrome_options.add_argument("--disable-features=TranslateUI,VizDisplayCompositor,AudioServiceOutOfProcess")
         chrome_options.add_argument("--window-size=480,960")
-
-        # Fix lỗi shared memory trên Android
-        chrome_options.add_argument("--disable-ipc-flooding-protection")
-        chrome_options.add_argument("--disable-backgrounding-occluded-windows")
+        
+        # Giảm RAM
+        chrome_options.add_argument("--js-flags=--max-old-space-size=256")
     else:
+        chrome_options.add_argument("--disable-infobars")
+        chrome_options.add_argument("--disable-popup-blocking")
+        chrome_options.add_argument("--disable-notifications")
         chrome_options.add_argument("--window-size=1920,1080")
 
     # === PROXY QUA CHROME OPTIONS ===
@@ -652,10 +668,15 @@ def setup_driver(profile_path, proxy_config):
                 break
         if driver_found:
             print(f"{G}[DEVICE] Chromedriver: {driver_found}{W}")
-            service = Service(executable_path=driver_found)
+            # Bật verbose log cho ChromeDriver để debug
+            service = Service(
+                executable_path=driver_found,
+                service_args=["--verbose"],
+                log_output=os.path.join(os.environ.get("HOME", "/data/data/com.termux/files/home"), "chromedriver.log")
+            )
         else:
             print(f"{R}[!] Khong tim thay chromedriver!{W}")
-            raise FileNotFoundError("chromedriver not found. Run: pkg install chromium")
+            raise FileNotFoundError("chromedriver not found")
     else:
         local_driver = "chromedriver.exe" if IS_WINDOWS else "chromedriver"
         current_dir_driver = os.path.join(os.getcwd(), local_driver)
@@ -669,6 +690,15 @@ def setup_driver(profile_path, proxy_config):
     # === KHỞI TẠO DRIVER ===
     try:
         print(f"{Y}[DEVICE] Dang khoi tao trinh duyet...{W}")
+        
+        # In ra tất cả Chrome arguments để debug
+        if IS_TERMUX:
+            args_list = chrome_options.arguments
+            print(f"{C}[DEBUG] Chrome args: {len(args_list)} flags{W}")
+            for a in args_list:
+                if not a.startswith("--user-agent") and not a.startswith("--user-data"):
+                    print(f"{C}  {a}{W}")
+        
         driver = webdriver.Chrome(service=service, options=chrome_options)
         print(f"{G}[DEVICE] Trinh duyet da san sang!{W}")
     except Exception as e:
@@ -680,9 +710,20 @@ def setup_driver(profile_path, proxy_config):
             print(f"\n{Y}[TIP] Thu cac buoc sau:{W}")
             print(f"{G}  1. pkg update && pkg install chromium{W}")
             print(f"{G}  2. chmod +x /data/data/com.termux/files/usr/bin/chromedriver{W}")
-            print(f"{G}  3. chromium-browser --version  (kiem tra phien ban){W}")
-            print(f"{G}  4. chromedriver --version       (kiem tra phien ban){W}")
-            print(f"{Y}  => 2 phien ban phai giong nhau (vd: cung 131.x){W}")
+            print(f"{G}  3. chromium-browser --headless --no-sandbox --disable-gpu --dump-dom https://example.com{W}")
+            print(f"{Y}     (neu lenh tren KHONG in ra HTML => Chromium bi loi){W}")
+            
+            # Check verbose log
+            log_path = os.path.join(os.environ.get("HOME", "/data/data/com.termux/files/home"), "chromedriver.log")
+            if os.path.exists(log_path):
+                print(f"\n{Y}[LOG] ChromeDriver log (cuoi file):{W}")
+                try:
+                    with open(log_path, 'r') as f:
+                        lines = f.readlines()
+                        for line in lines[-15:]:
+                            print(f"{C}  {line.rstrip()}{W}")
+                except Exception:
+                    pass
             
             # Tự kiểm tra version
             try:
@@ -693,6 +734,27 @@ def setup_driver(profile_path, proxy_config):
                 print(f"{C}  Driver   : {dv.stdout.strip()}{W}")
             except Exception:
                 pass
+            
+            # Test thử Chromium trực tiếp
+            print(f"\n{Y}[TEST] Dang thu chay Chromium truc tiep...{W}")
+            try:
+                import subprocess as sp
+                test_cmd = [
+                    chromium_found or "chromium-browser",
+                    "--headless", "--no-sandbox", "--disable-gpu",
+                    "--single-process", "--no-zygote",
+                    "--dump-dom", "data:text/html,<h1>test</h1>"
+                ]
+                test_result = sp.run(test_cmd, capture_output=True, text=True, timeout=15)
+                if "test" in test_result.stdout:
+                    print(f"{G}  [OK] Chromium chay duoc! Loi co the do ChromeDriver.{W}")
+                else:
+                    print(f"{R}  [FAIL] Chromium KHONG chay duoc.{W}")
+                    if test_result.stderr:
+                        for line in test_result.stderr.strip().split('\n')[-5:]:
+                            print(f"{R}  {line}{W}")
+            except Exception as te:
+                print(f"{R}  [FAIL] Khong test duoc: {te}{W}")
         else:
             if "permission" in err_msg or "executable" in err_msg:
                 print(f"{Y}[TIP] Thu chay: chmod +x $(which chromedriver){W}")
