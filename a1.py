@@ -602,17 +602,19 @@ def setup_driver(profile_path, proxy_config):
 
     # === OPTIONS RIÊNG CHO TERMUX ===
     if IS_TERMUX:
-        # BẮT BUỘC trên Termux - Chrome không thể fork process trên Android
-        chrome_options.add_argument("--single-process")
+        # KHÔNG dùng --single-process (crash khi load trang nặng như Facebook)
+        # Thay vào đó dùng --no-zygote + --disable-site-isolation-trials
         chrome_options.add_argument("--no-zygote")
         
-        # Fix crash
+        # Fix crash / session
         chrome_options.add_argument("--disable-setuid-sandbox")
         chrome_options.add_argument("--disable-crash-reporter")
         chrome_options.add_argument("--disable-breakpad")
         chrome_options.add_argument("--remote-debugging-port=0")
         
-        # Disable features gây lỗi trên Termux
+        # QUAN TRỌNG: Giảm RAM cực mạnh
+        chrome_options.add_argument("--disable-site-isolation-trials")
+        chrome_options.add_argument("--disable-features=IsolateOrigins,site-per-process,TranslateUI,VizDisplayCompositor,AudioServiceOutOfProcess")
         chrome_options.add_argument("--disable-software-rasterizer")
         chrome_options.add_argument("--disable-background-networking")
         chrome_options.add_argument("--disable-default-apps")
@@ -623,11 +625,15 @@ def setup_driver(profile_path, proxy_config):
         chrome_options.add_argument("--disable-notifications")
         chrome_options.add_argument("--disable-popup-blocking")
         chrome_options.add_argument("--disable-infobars")
-        chrome_options.add_argument("--disable-features=TranslateUI,VizDisplayCompositor,AudioServiceOutOfProcess")
-        chrome_options.add_argument("--window-size=480,960")
+        chrome_options.add_argument("--disable-client-side-phishing-detection")
+        chrome_options.add_argument("--disable-component-update")
+        chrome_options.add_argument("--disable-domain-reliability")
+        chrome_options.add_argument("--disable-hang-monitor")
+        chrome_options.add_argument("--window-size=360,640")
+        chrome_options.add_argument("--js-flags=--max-old-space-size=128")
         
-        # Giảm RAM
-        chrome_options.add_argument("--js-flags=--max-old-space-size=256")
+        # Giới hạn processes
+        chrome_options.add_argument("--renderer-process-limit=1")
     else:
         chrome_options.add_argument("--disable-infobars")
         chrome_options.add_argument("--disable-popup-blocking")
@@ -782,6 +788,49 @@ def setup_driver(profile_path, proxy_config):
 
     return driver
 
+def is_session_alive(driver):
+    """Kiem tra Chrome session con song khong"""
+    try:
+        _ = driver.current_url
+        return True
+    except Exception:
+        return False
+
+def retry_get(driver, url, max_retries=3, proxy_config=None, profile_path=None):
+    """Navigate toi URL voi retry. Tra ve driver (co the la driver moi neu restart)"""
+    for attempt in range(max_retries):
+        try:
+            if not is_session_alive(driver):
+                print(f"{Y}[RETRY] Session da chet, dang khoi dong lai... (lan {attempt+1}/{max_retries}){W}")
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+                time.sleep(3)
+                driver = setup_driver(profile_path, proxy_config)
+            
+            print(f"{Y}[NAV] Dang mo {url}...{W}")
+            driver.set_page_load_timeout(60)
+            driver.get(url)
+            print(f"{G}[NAV] Da mo thanh cong!{W}")
+            return driver
+        except Exception as e:
+            print(f"{R}[NAV] Loi lan {attempt+1}: {e}{W}")
+            if attempt < max_retries - 1:
+                print(f"{Y}[RETRY] Doi 5 giay roi thu lai...{W}")
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+                time.sleep(5)
+                try:
+                    driver = setup_driver(profile_path, proxy_config)
+                except Exception:
+                    pass
+            else:
+                raise e
+    return driver
+
 def send_keys_slowly(element, text):
     for char in text:
         element.send_keys(char)
@@ -836,8 +885,8 @@ def run_one_account(proxy_str, mode="auto", email_manual=None, mail_source="1"):
         pw = generate_strong_password()
 
         print(f"{B}[RUNNING] [{mode.upper()}] {email} | {full_name}{W}")
-        driver.get("https://m.facebook.com/reg")
-        time.sleep(20)
+        driver = retry_get(driver, "https://m.facebook.com/reg", max_retries=3, proxy_config=proxy_config, profile_path=my_p_path)
+        time.sleep(10)
 
         send_keys_slowly(wait.until(EC.presence_of_element_located((By.NAME, "firstname"))), f"{t_dem} {t_chinh}")
         send_keys_slowly(driver.find_element(By.NAME, "lastname"), ho)
