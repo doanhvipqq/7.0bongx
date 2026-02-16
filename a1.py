@@ -545,7 +545,8 @@ def setup_driver(profile_path, proxy_config):
     # === HEADLESS MODE ===
     if IS_TERMUX or IS_LINUX or not os.environ.get('DISPLAY'):
         print(f"{Y}[DEVICE] Che do Headless (An trinh duyet){W}")
-        chrome_options.add_argument("--headless=new")
+        # Dùng --headless thay vì --headless=new (--headless=new cần Chrome 112+, Termux có thể cũ hơn)
+        chrome_options.add_argument("--headless")
         chrome_options.add_argument("--disable-gpu")
         chrome_options.add_argument("--disable-software-rasterizer")
 
@@ -569,6 +570,16 @@ def setup_driver(profile_path, proxy_config):
             print(f"{R}[!] Khong tim thay Chromium! Chay: pkg install chromium{W}")
             raise FileNotFoundError("Chromium not found. Run: pkg install chromium")
 
+        # === SET TMPDIR cho Termux (quan trọng - Chrome cần thư mục tmp) ===
+        termux_tmp = "/data/data/com.termux/files/usr/tmp"
+        if not os.path.exists(termux_tmp):
+            try:
+                os.makedirs(termux_tmp, exist_ok=True)
+            except Exception:
+                pass
+        os.environ["TMPDIR"] = termux_tmp
+        print(f"{G}[DEVICE] TMPDIR: {termux_tmp}{W}")
+
     # === CHROME OPTIONS CHUNG ===
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
@@ -582,21 +593,28 @@ def setup_driver(profile_path, proxy_config):
     chrome_options.add_argument("--no-first-run")
     chrome_options.add_argument("--ignore-certificate-errors")
 
-    # === OPTIONS RIÊNG CHO TERMUX (tiết kiệm RAM) ===
+    # === OPTIONS RIÊNG CHO TERMUX ===
     if IS_TERMUX:
+        # Quan trọng cho Termux - fix SessionNotCreatedException
+        chrome_options.add_argument("--remote-debugging-port=0")
+        chrome_options.add_argument("--disable-crash-reporter")
+        chrome_options.add_argument("--disable-breakpad")
+        chrome_options.add_argument("--disable-setuid-sandbox")
+        chrome_options.add_argument("--no-zygote")
+
+        # Tiết kiệm RAM
         chrome_options.add_argument("--disable-background-networking")
         chrome_options.add_argument("--disable-default-apps")
         chrome_options.add_argument("--disable-sync")
         chrome_options.add_argument("--disable-translate")
-        chrome_options.add_argument("--disable-features=TranslateUI,VizDisplayCompositor")
         chrome_options.add_argument("--disable-logging")
-        chrome_options.add_argument("--disable-permissions-api")
-        chrome_options.add_argument("--disable-setuid-sandbox")
-        chrome_options.add_argument("--window-size=480,960")
-        # KHÔNG dùng --single-process (crash trên nhiều thiết bị Android)
-        # Thay bằng:
-        chrome_options.add_argument("--renderer-process-limit=1")
         chrome_options.add_argument("--disable-renderer-backgrounding")
+        chrome_options.add_argument("--disable-features=TranslateUI")
+        chrome_options.add_argument("--window-size=480,960")
+
+        # Fix lỗi shared memory trên Android
+        chrome_options.add_argument("--disable-ipc-flooding-protection")
+        chrome_options.add_argument("--disable-backgrounding-occluded-windows")
     else:
         chrome_options.add_argument("--window-size=1920,1080")
 
@@ -656,17 +674,29 @@ def setup_driver(profile_path, proxy_config):
     except Exception as e:
         err_msg = str(e).lower()
         print(f"{R}[ERROR] Loi khoi tao Driver!{W}")
-        
-        if "permission" in err_msg or "executable" in err_msg:
-            print(f"{Y}[TIP] Thu chay: chmod +x $(which chromedriver){W}")
+        print(f"{R}[DETAIL] {e}{W}")
         
         if IS_TERMUX:
-            print(f"{Y}[TIP] Chay cac lenh sau:{W}")
-            print(f"{G}  pkg install chromium{W}")
-            print(f"{G}  pip install selenium{W}")
-        
-        # In chi tiết lỗi
-        print(f"{R}[DETAIL] {e}{W}")
+            print(f"\n{Y}[TIP] Thu cac buoc sau:{W}")
+            print(f"{G}  1. pkg update && pkg install chromium{W}")
+            print(f"{G}  2. chmod +x /data/data/com.termux/files/usr/bin/chromedriver{W}")
+            print(f"{G}  3. chromium-browser --version  (kiem tra phien ban){W}")
+            print(f"{G}  4. chromedriver --version       (kiem tra phien ban){W}")
+            print(f"{Y}  => 2 phien ban phai giong nhau (vd: cung 131.x){W}")
+            
+            # Tự kiểm tra version
+            try:
+                import subprocess as sp
+                cv = sp.run(["chromium-browser", "--version"], capture_output=True, text=True, timeout=5)
+                dv = sp.run(["chromedriver", "--version"], capture_output=True, text=True, timeout=5)
+                print(f"\n{C}  Chromium : {cv.stdout.strip()}{W}")
+                print(f"{C}  Driver   : {dv.stdout.strip()}{W}")
+            except Exception:
+                pass
+        else:
+            if "permission" in err_msg or "executable" in err_msg:
+                print(f"{Y}[TIP] Thu chay: chmod +x $(which chromedriver){W}")
+
         raise e
 
     # === ANTI-DETECT BANG JS ===
@@ -678,12 +708,6 @@ def setup_driver(profile_path, proxy_config):
                 Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
                 Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
                 window.chrome = { runtime: {} };
-                const originalQuery = window.navigator.permissions.query;
-                window.navigator.permissions.query = (parameters) => (
-                    parameters.name === 'notifications' ?
-                    Promise.resolve({ state: Notification.permission }) :
-                    originalQuery(parameters)
-                );
             """
         })
     except Exception:
